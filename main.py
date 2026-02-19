@@ -35,3 +35,14 @@ if __name__ == "__main__":
     keep_alive() # "Тудим-сюдим" серверини ёқиш
     print("Бот ёқилди...")
     bot.polling(none_stop=True)
+if __name__ == "__main__":
+    # 1. Render берадиган портни тизимдан оламиз
+    port = int(os.environ.get("PORT", 8080)) 
+    
+    # 2. Веб-серверни (Flask) алоҳида оқимда, тўғри порт билан юргизамиз
+    t = Thread(target=lambda: app.run(host='0.0.0.0', port=port))
+    t.start()
+    
+    # 3. Ботни асосий оқимда юргизамиз
+    print("Бот ёқилди...")
+    bot.polling(none_stop=True)
