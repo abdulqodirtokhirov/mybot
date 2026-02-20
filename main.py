@@ -3,6 +3,7 @@ from flask import Flask
 from threading import Thread
 from telebot import types
 from datetime import datetime
+import time
 
 TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
@@ -44,11 +45,9 @@ def process_manual_entry(message, t_type):
         text = message.text.strip()
         parts = text.split()
         
-        # Агар фақат рақам бўлса (масалан: 44000)
         if text.isdigit():
             category = "Boshqa"
             amount = int(text)
-        # Агар 'Ойлик 3000000' кўринишида бўлса
         elif len(parts) >= 2 and parts[-1].isdigit():
             category = " ".join(parts[:-1])
             amount = int(parts[-1])
@@ -64,7 +63,6 @@ def process_manual_entry(message, t_type):
 @bot.message_handler(func=lambda m: True)
 def quick_entry(message):
     text = message.text.strip()
-    # Статистика бўлса ўтказиб юборамиз
     if text == "📊 Статистика":
         show_stats(message)
         return
@@ -90,17 +88,13 @@ def save_to_db(uid, t_type, category, amount):
     conn.commit()
     conn.close()
 
-# --- СТАТИСТИКА (КАТЕГОРИЯЛАР ВА СОФ ФОЙДА) ---
+# --- СТАТИСТИКА ---
 @bot.message_handler(func=lambda m: m.text == "📊 Статистика")
 def show_stats(message):
     conn = sqlite3.connect('finance.db')
     cursor = conn.cursor()
-    
-    # Категориялар бўйича чиқариш
     cursor.execute("SELECT type, category, SUM(amount) FROM finance WHERE uid = ? GROUP BY type, category", (message.chat.id,))
     rows = cursor.fetchall()
-    
-    # Умумий суммалар учун
     cursor.execute("SELECT type, SUM(amount) FROM finance WHERE uid = ? GROUP BY type", (message.chat.id,))
     totals = dict(cursor.fetchall())
     conn.close()
@@ -117,18 +111,25 @@ def show_stats(message):
     res += "\n\n" + "—" * 15 + "\n"
     d_sum = totals.get("💰 Даромад", 0)
     x_sum = totals.get("💸 Харажат", 0)
-    
-    res += f"📈 Жами Даромад: {d_sum:,} сўм\n"
-    res += f"📉 Жами Харажат: {x_sum:,} сўм\n"
-    res += f"⚖️ **Соф фойда: {d_sum - x_sum:,} сўм**"
-    
+    res += f"📈 Жами Даромад: {d_sum:,} сўм\n📉 Жами Харажат: {x_sum:,} сўм\n⚖️ **Соф фойда: {d_sum - x_sum:,} сўм**"
     bot.send_message(message.chat.id, res, parse_mode="Markdown")
 
 @app.route('/')
 def home(): return "OK"
 
+# --- ЭНГ МУҲИМ ҚИСМ: АВТО-РЕСТАРТ ВА polling ---
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 10000))
+    # Веб-серверни алоҳида оқимда юргизиш (Render учун)
     Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
-    bot.polling(none_stop=True)
+    
+    print("Бот ишга тушди...")
+    
+    # Хато юз берса, ботни қайта тирилтирувчи цикл
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            print(f"Polling хатоси: {e}. 5 сониядан кейин қайта уланиш...")
+            time.sleep(5)
