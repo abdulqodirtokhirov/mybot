@@ -19,8 +19,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+# 1-ЎЗГАРИШ: one_time_keyboard=False қўшилди, тугмалар доим туради
 def main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=2)
     markup.add("💸 Харажат", "💰 Даромад")
     markup.add("📊 Статистика", "📅 Ойлик ҳисобот")
     return markup
@@ -37,7 +38,8 @@ def start(message):
 @bot.message_handler(func=lambda m: m.text in ["💸 Харажат", "💰 Даромад"])
 def handle_button(message):
     t_type = message.text
-    msg = bot.send_message(message.chat.id, f"{t_type} суммасини ёзинг (ёки 'Номи Сумма'):", reply_markup=types.ReplyKeyboardRemove())
+    # 2-ЎЗГАРИШ: KeyboardRemove олиб ташланди, тугмалар ўчиб кетмайди
+    msg = bot.send_message(message.chat.id, f"{t_type} суммасини ёзинг (ёки 'Номи Сумма'):")
     bot.register_next_step_handler(msg, process_manual_entry, t_type)
 
 def process_manual_entry(message, t_type):
@@ -121,12 +123,10 @@ def home(): return "OK"
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 10000))
-    # Веб-серверни алоҳида оқимда юргизиш (Render учун)
     Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
     
     print("Бот ишга тушди...")
     
-    # Хато юз берса, ботни қайта тирилтирувчи цикл
     while True:
         try:
             bot.polling(none_stop=True, interval=0, timeout=20)
