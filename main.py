@@ -4,37 +4,33 @@ from threading import Thread
 from telebot import types
 from datetime import datetime
 
-# Бот Токени
+# Бот Токенини шу ерга ёзинг ёки Environment Variable сифатида қолдиринг
 TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 app = Flask('')
 
-# Маълумотлар базасини созлаш
+# --- БАЗАНИ ИНИЦИАЛИЗАЦИЯ ҚИЛИШ ---
 def init_db():
     conn = sqlite3.connect('finance.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS finance 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, type TEXT, 
-                       category TEXT, amount REAL, date TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings 
-                      (uid INTEGER PRIMARY KEY, currency TEXT DEFAULT 'UZS')''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS finance (id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, type TEXT, category TEXT, amount REAL, currency TEXT, date TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS settings (uid INTEGER PRIMARY KEY, currency TEXT DEFAULT "UZS")')
+    cursor.execute('CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, d_type TEXT, name TEXT, amount REAL, currency TEXT, date TEXT)')
     conn.commit()
     conn.close()
 
-# Валюта курсларини олиш (НБУ) - CNY қўшилди
+# --- ВАЛЮТА КУРСЛАРИНИ ОЛИШ ---
 def get_rates():
     try:
         res = requests.get("https://nbu.uz/uz/exchange-rates/json/").json()
-        rates = {'UZS': 1.0, 'USD': 12600.0, 'RUB': 140.0, 'CNY': 1800.0}
+        rates = {'UZS': 1.0, 'USD': 12850.0, 'RUB': 145.0, 'CNY': 1800.0}
         for i in res:
-            if i['code'] == 'USD': rates['USD'] = float(i['cb_price'])
-            if i['code'] == 'RUB': rates['RUB'] = float(i['cb_price'])
-            if i['code'] == 'CNY': rates['CNY'] = float(i['cb_price'])
+            if i['code'] in rates: rates[i['code']] = float(i['cb_price'])
         return rates
     except:
-        return {'UZS': 1.0, 'USD': 12600.0, 'RUB': 140.0, 'CNY': 1800.0}
+        return {'UZS': 1.0, 'USD': 12850.0, 'RUB': 145.0, 'CNY': 1800.0}
 
-def get_user_settings(uid):
+def get_user_currency(uid):
     conn = sqlite3.connect('finance.db')
     cursor = conn.cursor()
     cursor.execute("SELECT currency FROM settings WHERE uid = ?", (uid,))
@@ -42,170 +38,241 @@ def get_user_settings(uid):
     conn.close()
     return res[0] if res else 'UZS'
 
-# Асосий меню (Эслатма тугмаси олиб ташланди)
+# --- МЕНЮЛАР ---
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("💸 Харажат"), types.KeyboardButton("💰 Даромад"))
-    markup.add(types.KeyboardButton("📊 Статистика"), types.KeyboardButton("🔍 Кунлик ҳисобот"))
-    markup.add(types.KeyboardButton("💱 Валютани танлаш"), types.KeyboardButton("📅 Ойлик архив"))
+    markup.add("💸 Харажат", "💰 Даромад")
+    markup.add("📊 Статистика", "📅 Ойлик харажат")
+    markup.add("🔍 Кунлик ҳисобот", "🤝 Олди-берди")
+    markup.add("💱 Валютани танлаш")
+    return markup
+
+def debt_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("➕ Ҳаққим бор", "➖ Қарздорман")
+    markup.add("💰 Қарзни қайтариш", "📜 Кимда нима бор?")
+    markup.add("⬅️ Ортга")
     return markup
 
 @bot.message_handler(commands=['start'])
 def start(message):
     init_db()
-    bot.send_message(message.chat.id, "Ассалому алайкум! Молиявий назорат ботига хуш келибсиз.", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "💰 SmartHisob тизимига хуш келибсиз!", reply_markup=main_menu())
 
-# --- КИРИТИШ ТИЗИМИ ---
-@bot.message_handler(func=lambda m: m.text in ["💸 Харажат", "💰 Даромад"])
-def handle_entry(message):
-    t_type = message.text
-    msg = bot.send_message(message.chat.id, f"{t_type} миқдорини киритинг (Масалан: 'Обед 50000' ёки '50000'):")
-    bot.register_next_step_handler(msg, ask_currency_confirm, t_type)
+# --- КУНЛИК ҲИСОБОТ (ОЙ ВА КУН ТАНЛАШ) ---
+@bot.message_handler(func=lambda m: m.text == "🔍 Кунлик ҳисобот")
+def daily_archive_months(message):
+    uid = message.chat.id
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT strftime('%Y-%m', date) FROM finance WHERE uid=? ORDER BY date DESC", (uid,))
+    months = cursor.fetchall()
+    conn.close()
+    
+    if not months:
+        bot.send_message(uid, "📭 Ҳозирча маълумот йўқ.")
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    for m in months:
+        markup.add(types.InlineKeyboardButton(f"📅 {m[0]}", callback_data=f"dmon_{m[0]}"))
+    bot.send_message(uid, "Қайси ойни кўрмоқчисиз?", reply_markup=markup)
 
-def ask_currency_confirm(message, t_type):
-    try:
-        text = message.text.strip()
-        parts = text.split()
-        
-        if text.replace('.','',1).isdigit():
-            category, amount = "Бошқа", float(text)
-        else:
-            category, amount = " ".join(parts[:-1]), float(parts[-1])
-        
-        user_cur = get_user_settings(message.chat.id)
-        markup = types.InlineKeyboardMarkup()
-        # Валюта танлаш тугмалари
-        markup.add(types.InlineKeyboardButton(f"✅ {user_cur}", callback_data=f"save_{t_type}_{amount}_{category}_{user_cur}"),
-                   types.InlineKeyboardButton("🇺🇿 UZS", callback_data=f"save_{t_type}_{amount}_{category}_UZS"))
-        
-        bot.send_message(message.chat.id, f"Ушбу суммани қайси валютада сақлаймиз?", reply_markup=markup)
-    except:
-        bot.send_message(message.chat.id, "❌ Хато! Илтимос, суммани рақамда ёзинг.")
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dmon_'))
+def daily_archive_days(call):
+    month = call.data.split('_')[1]
+    uid = call.message.chat.id
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT date FROM finance WHERE uid=? AND date LIKE ? ORDER BY date DESC", (uid, f"{month}%"))
+    days = cursor.fetchall()
+    conn.close()
+    
+    markup = types.InlineKeyboardMarkup()
+    for d in days:
+        day_val = d[0].split('-')[-1]
+        markup.add(types.InlineKeyboardButton(f"📆 {day_val}-кун", callback_data=f"dday_{d[0]}"))
+    bot.edit_message_text(f"📅 {month} ойидаги кунни танланг:", uid, call.message.message_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('save_'))
-def finalize_save(call):
-    _, t_type, amt, cat, cur = call.data.split('_')
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dday_'))
+def daily_report_final(call):
+    date_str = call.data.split('_')[1]
+    uid = call.message.chat.id
+    u_cur = get_user_currency(uid)
     rates = get_rates()
-    uzs_val = float(amt) * rates.get(cur, 1.0) if cur != 'UZS' else float(amt)
+    u_rate = rates.get(u_cur, 1.0)
     
     conn = sqlite3.connect('finance.db')
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO finance (uid, type, category, amount, date) VALUES (?, ?, ?, ?, ?)",
-                   (call.message.chat.id, t_type, cat, uzs_val, datetime.now().strftime("%Y-%m-%d")))
-    conn.commit()
+    cursor.execute("SELECT type, category, amount, currency FROM finance WHERE uid=? AND date=?", (uid, date_str))
+    items = cursor.fetchall()
     conn.close()
     
-    bot.edit_message_text(f"✅ Сақланди!\n{t_type}: {amt} {cur}", call.message.chat.id, call.message.message_id)
+    res = f"📆 **{date_str} бўйича батафсил:**\n"
+    t_in, t_out = 0, 0
+    for t_type, cat, amt, c_cur in items:
+        uzs_val = amt * rates.get(c_cur, 1.0)
+        if t_type == "💰 Даромад": t_in += uzs_val
+        else: t_out += uzs_val
+        res += f"\n{'🔹' if t_type == '💸 Харажат' else '🔸'} {cat}: {amt:,.0f} {c_cur}"
+    
+    res += f"\n\n💰 Кирим: {t_in/u_rate:,.2f}\n💸 Чиқим: {t_out/u_rate:,.2f}\n⚖️ Қолдиқ: {(t_in-t_out)/u_rate:,.2f} {u_cur}"
+    bot.send_message(uid, res, parse_mode="Markdown")
 
-# --- ВАЛЮТАНИ СОЗЛАШ (CNY қўшилди) ---
-@bot.message_handler(func=lambda m: m.text == "💱 Валютани танлаш")
-def change_currency(message):
+# --- ОЙЛИК ҲИСОБОТ (СТАТИСТИКА ФОРМАТИДА) ---
+@bot.message_handler(func=lambda m: m.text == "📅 Ойлик харажат")
+def monthly_archive(message):
+    uid = message.chat.id
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT strftime('%Y-%m', date) FROM finance WHERE uid=? ORDER BY date DESC", (uid,))
+    months = cursor.fetchall()
+    conn.close()
+    
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🇺🇿 UZS", callback_data="setcur_UZS"),
-               types.InlineKeyboardButton("🇺🇸 USD", callback_data="setcur_USD"))
-    markup.add(types.InlineKeyboardButton("🇷🇺 RUB", callback_data="setcur_RUB"),
-               types.InlineKeyboardButton("🇨🇳 CNY", callback_data="setcur_CNY"))
-    bot.send_message(message.chat.id, "Асосий ҳисоб-китоб валютасини танланг:", reply_markup=markup)
+    for m in months:
+        markup.add(types.InlineKeyboardButton(f"📊 {m[0]}", callback_data=f"mstat_{m[0]}"))
+    bot.send_message(uid, "Қайси ой статистикасини кўрмоқчисиз?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('mstat_'))
+def monthly_report_final(call):
+    month = call.data.split('_')[1]
+    uid = call.message.chat.id
+    u_cur = get_user_currency(uid)
+    rates = get_rates()
+    u_rate = rates.get(u_cur, 1.0)
+    
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT type, category, amount, currency FROM finance WHERE uid=? AND date LIKE ?", (uid, f"{month}%"))
+    items = cursor.fetchall()
+    conn.close()
+    
+    stats = {}; t_in, t_out = 0, 0
+    for t_type, cat, amt, c_cur in items:
+        uzs_val = amt * rates.get(c_cur, 1.0)
+        if t_type == "💰 Даромад": t_in += uzs_val
+        else:
+            t_out += uzs_val
+            stats[cat] = stats.get(cat, 0) + uzs_val
+            
+    res = f"📊 **{month} ойи ҳисоботи ({u_cur}):**\n"
+    for cat, val in stats.items():
+        p = (val / t_out * 100) if t_out > 0 else 0
+        res += f"\n🔸 {cat}: {val/u_rate:,.2f} ({p:.1f}%)"
+    
+    res += f"\n\n🌍 Умумий ҳолат:\n💰 Жами кирим: {t_in/u_rate:,.2f}\n💸 Жами чиқим: {t_out/u_rate:,.2f}\n⚖️ Қолдиқ: {(t_in-t_out)/u_rate:,.2f} {u_cur}"
+    bot.send_message(uid, res, parse_mode="Markdown")
+
+# --- КИРИМ-ЧИҚИМ (АҚЛЛИ) ---
+@bot.message_handler(func=lambda m: m.text in ["💸 Харажат", "💰 Даромад"])
+def input_money(message):
+    t_type = message.text
+    msg = bot.send_message(message.chat.id, f"{t_type}ни киритинг (Мас: Обед 20000 ёки 20000):")
+    bot.register_next_step_handler(msg, save_money, t_type)
+
+def save_money(message, t_type):
+    try:
+        parts = message.text.split()
+        if len(parts) == 1 and parts[0].replace('.', '', 1).isdigit():
+            cat, amt = "Бошқа", float(parts[0])
+        else:
+            amt = float(parts[-1]); cat = " ".join(parts[:-1])
+        
+        markup = types.InlineKeyboardMarkup()
+        for c in ["UZS", "USD", "RUB", "CNY"]:
+            markup.add(types.InlineKeyboardButton(c, callback_data=f"sv_{t_type}_{amt}_{cat}_{c}"))
+        bot.send_message(message.chat.id, "Валютани танланг:", reply_markup=markup)
+    except:
+        bot.send_message(message.chat.id, "❌ Хато! Қайтадан киритинг.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('sv_'))
+def finalize_money(call):
+    _, t_type, amt, cat, cur = call.data.split('_')
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO finance (uid, type, category, amount, currency, date) VALUES (?,?,?,?,?,?)",
+                   (call.message.chat.id, t_type, cat, float(amt), cur, datetime.now().strftime("%Y-%m-%d")))
+    conn.commit()
+    conn.close()
+    bot.edit_message_text(f"✅ Сақланди: {cat} {amt} {cur}", call.message.chat.id, call.message.message_id)
+
+# --- ҚАРЗНИ ҚАЙТАРИШ (АЛОҲИДА ЎЧИРИШ) ---
+@bot.message_handler(func=lambda m: m.text == "💰 Қарзни қайтариш")
+def debt_repay_list(message):
+    conn = sqlite3.connect('finance.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT name FROM debts WHERE uid=?", (message.chat.id,))
+    names = cursor.fetchall()
+    conn.close()
+    if not names:
+        bot.send_message(message.chat.id, "📭 Қарздорлар рўйхати бўш.")
+        return
+    markup = types.InlineKeyboardMarkup()
+    for n in names:
+        markup.add(types.InlineKeyboardButton(n[0], callback_data=f"rep_{n[0]}"))
+    bot.send_message(message.chat.id, "Ким қайтарди?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('rep_'))
+def repay_amount(call):
+    name = call.data.split('_')[1]
+    msg = bot.send_message(call.message.chat.id, f"👤 {name}. Қайтарилган суммани ёзинг:")
+    bot.register_next_step_handler(msg, finalize_repay, name)
+
+def finalize_repay(message, name):
+    try:
+        amt = float(message.text); uid = message.chat.id
+        conn = sqlite3.connect('finance.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT d_type, amount, currency FROM debts WHERE uid=? AND name=?", (uid, name))
+        d = cursor.fetchone()
+        if d:
+            new_val = d[1] - amt
+            cursor.execute("DELETE FROM debts WHERE uid=? AND name=?", (uid, name))
+            if new_val > 0.1:
+                cursor.execute("INSERT INTO debts (uid, d_type, name, amount, currency, date) VALUES (?,?,?,?,?,?)",
+                               (uid, d[0], name, new_val, d[2], datetime.now().strftime("%Y-%m-%d")))
+                bot.send_message(uid, f"✅ Қолдиқ: {new_val:,.2f} {d[2]}")
+            else:
+                bot.send_message(uid, f"✅ {name} билан ҳисоб тўлиқ ёпилди!")
+            conn.commit()
+        conn.close()
+    except:
+        bot.send_message(message.chat.id, "❌ Фақат сон киритинг.")
+
+# --- ВАЛЮТАНИ ТАНЛАШ ---
+@bot.message_handler(func=lambda m: m.text == "💱 Валютани танлаш")
+def set_currency(message):
+    markup = types.InlineKeyboardMarkup()
+    for c in ["UZS", "USD", "RUB", "CNY"]:
+        markup.add(types.InlineKeyboardButton(c, callback_data=f"setcur_{c}"))
+    bot.send_message(message.chat.id, "Асосий валютани танланг:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('setcur_'))
-def set_currency(call):
+def finalize_cur(call):
     cur = call.data.split('_')[1]
     conn = sqlite3.connect('finance.db')
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (uid, currency) VALUES (?, ?)", (call.message.chat.id, cur))
     conn.commit()
     conn.close()
-    bot.edit_message_text(f"✅ Танланган валюта: {cur}. Энди барча маълумотлар шу валютада кўрсатилади.", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text(f"✅ Асосий валюта: {cur}", call.message.chat.id, call.message.message_id)
 
-# --- СТАТИСТИКА ---
-@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
-def show_stats(message):
-    uid = message.chat.id
-    cur = get_user_settings(uid)
-    rates = get_rates()
-    rate = rates.get(cur, 1.0)
-    
-    conn = sqlite3.connect('finance.db')
-    cursor = conn.cursor()
-    this_m = datetime.now().strftime("%Y-%m")
-    
-    cursor.execute("SELECT category, SUM(amount) FROM finance WHERE uid=? AND type='💸 Харажат' AND date LIKE ? GROUP BY category", (uid, f"{this_m}%"))
-    rows = cursor.fetchall()
-    
-    cursor.execute("SELECT type, SUM(amount) FROM finance WHERE uid=? GROUP BY type", (uid,))
-    totals = dict(cursor.fetchall())
-    conn.close()
-    
-    res = f"📊 **Статистика ({cur}):**\n"
-    x_month = sum(r[1] for r in rows)
-    
-    for cat, amt in rows:
-        p = (amt/x_month*100) if x_month > 0 else 0
-        res += f"\n🔸 {cat}: {amt/rate:,.2f} ({p:.1f}%)"
-    
-    d_total = totals.get("💰 Даромад", 0)
-    x_total = totals.get("💸 Харажат", 0)
-    
-    res += f"\n\n🌍 **Умумий итог:**\n💰 Кирим: {d_total/rate:,.2f}\n💸 Чиқим: {x_total/rate:,.2f}\n⚖️ Қолдиқ: {(d_total-x_total)/rate:,.2f}"
-    bot.send_message(uid, res, parse_mode="Markdown")
+# --- ОЛДИ-БЕРДИ, СТАТИСТИКА ВА ОРТГА ---
+@bot.message_handler(func=lambda m: m.text == "🤝 Олди-берди")
+def go_debt(message): bot.send_message(message.chat.id, "Қарзлар менюси:", reply_markup=debt_menu())
 
-# --- КУНЛИК ВА АРХИВ ---
-@bot.message_handler(func=lambda m: m.text == "🔍 Кунлик ҳисобот")
-def daily_rep(message):
-    msg = bot.send_message(message.chat.id, "Кунни киритинг (Масалан: 21):")
-    bot.register_next_step_handler(msg, process_daily)
+@bot.message_handler(func=lambda m: m.text == "⬅️ Ортга")
+def back(message): bot.send_message(message.chat.id, "Асосий меню:", reply_markup=main_menu())
 
-def process_daily(message):
-    day = message.text.strip().zfill(2)
-    date_str = datetime.now().strftime("%Y-%m-") + day
-    uid = message.chat.id
-    cur = get_user_settings(uid)
-    rate = get_rates().get(cur, 1.0)
-    
-    conn = sqlite3.connect('finance.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT type, SUM(amount) FROM finance WHERE uid=? AND date=? GROUP BY type", (uid, date_str))
-    data = dict(cursor.fetchall())
-    conn.close()
-    
-    d, x = data.get("💰 Даромад", 0), data.get("💸 Харажат", 0)
-    bot.send_message(uid, f"📅 **{date_str} ҳисоботи ({cur}):**\n\n💰 Кирим: {d/rate:,.2f}\n💸 Чиқим: {x/rate:,.2f}")
-
-@bot.message_handler(func=lambda m: m.text == "📅 Ойлик архив")
-def show_archive(message):
-    conn = sqlite3.connect('finance.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT strftime('%Y-%m', date) FROM finance WHERE uid = ?", (message.chat.id,))
-    months = cursor.fetchall()
-    conn.close()
-    if not months:
-        bot.send_message(message.chat.id, "Архивда маълумот йўқ.")
-        return
-    markup = types.InlineKeyboardMarkup()
-    for m in months:
-        markup.add(types.InlineKeyboardButton(f"📅 {m[0]}", callback_data=f"arch_{m[0]}"))
-    bot.send_message(message.chat.id, "Ойни танланг:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('arch_'))
-def arch_callback(call):
-    m_key = call.data.split('_')[1]
-    uid = call.message.chat.id
-    cur = get_user_settings(uid)
-    rate = get_rates().get(cur, 1.0)
-    conn = sqlite3.connect('finance.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT type, SUM(amount) FROM finance WHERE uid=? AND date LIKE ? GROUP BY type", (uid, f"{m_key}%"))
-    data = dict(cursor.fetchall())
-    conn.close()
-    d, x = data.get("💰 Даромад", 0), data.get("💸 Харажат", 0)
-    bot.send_message(uid, f"📅 **{m_key} якуни ({cur}):**\n\nКирим: {d/rate:,.2f}\nЧиқим: {x/rate:,.2f}")
-
-# Flask (24/7 ишлаши учун)
+# --- FLASK УЙҒОҚЛИК УЧУН ---
 @app.route('/')
-def home(): return "Бот ишламоқда"
+def home(): return "SmartHisob Active"
+
+def run():
+    app.run(host='0.0.0.0', port=10000)
 
 if __name__ == "__main__":
     init_db()
-    # Эслатма бўлими олиб ташланди, Thread керак эмас
-    Thread(target=lambda: app.run(host='0.0.0.0', port=10000)).start()
+    Thread(target=run).start()
     bot.polling(none_stop=True)
